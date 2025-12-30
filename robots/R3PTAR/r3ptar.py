@@ -9,6 +9,7 @@ import signal
 import sys
 from ev3dev2.motor import OUTPUT_A, OUTPUT_B, OUTPUT_C, OUTPUT_D, MediumMotor, LargeMotor
 from ev3dev2.sensor.lego import InfraredSensor
+from ev3dev2.display import Display
 from ev3dev2.sound import Sound
 from threading import Thread, Event
 from time import sleep
@@ -32,6 +33,8 @@ class MonitorRemoteControl(Thread):
 
     def run(self):
         STRIKE_SPEED_PCT = 40
+        STRIKE_DISTANCE = 30
+        tick = 0
 
         while True:
 
@@ -40,13 +43,19 @@ class MonitorRemoteControl(Thread):
                 break
 
             #log.info("proximity: %s" % self.parent.remote.proximity)
-            if self.parent.remote.proximity < 30:
-                self.parent.speaker.play('snake-hiss.wav', Sound.PLAY_NO_WAIT_FOR_COMPLETE)
-                self.parent.strike_motor.on_for_seconds(speed=STRIKE_SPEED_PCT, seconds=0.5)
-                self.parent.strike_motor.on_for_seconds(speed=(STRIKE_SPEED_PCT * -1), seconds=0.5)
+            if self.parent.remote.proximity < STRIKE_DISTANCE:
+                log.info('%s: proximity < %s, striking' % (self, STRIKE_DISTANCE))
+                self.parent.screen.text_grid('Striking!', clear_screen=True)
+                self.parent.screen.update()
+                self.parent.speaker.play_file('/home/robot/R3PTAR/snake-hiss.wav', Sound.PLAY_NO_WAIT_FOR_COMPLETE)
+                self.parent.strike_motor.on_for_seconds(speed=STRIKE_SPEED_PCT, seconds=0.2)
+                self.parent.strike_motor.on_for_seconds(speed=(STRIKE_SPEED_PCT * -1), seconds=0.2)
 
             self.parent.remote.process()
-            sleep(0.01)
+            tick += 1
+            if tick % 200 == 0:
+                log.info('%s: proximity=%s' % (self, self.parent.remote.proximity))
+            sleep(0.005)
 
 
 class R3PTAR(object):
@@ -61,9 +70,13 @@ class R3PTAR(object):
         self.strike_motor = LargeMotor(strike_motor_port)
         self.steer_motor = MediumMotor(steer_motor_port)
         self.speaker = Sound()
+        self.screen = Display()
         STEER_SPEED_PCT = 30
 
         self.remote = InfraredSensor()
+        log.info('IR sensor address=%s' % self.remote.address)
+        self.screen.text_grid('R3PTAR ready', clear_screen=True)
+        self.screen.update()
         self.remote.on_channel1_top_left = self.make_move(self.drive_motor, drive_speed_pct)
         self.remote.on_channel1_bottom_left = self.make_move(self.drive_motor, drive_speed_pct * -1)
         self.remote.on_channel1_top_right = self.make_move(self.steer_motor, STEER_SPEED_PCT)
@@ -80,6 +93,7 @@ class R3PTAR(object):
     def make_move(self, motor, speed):
         def move(state):
             if state:
+                log.info('remote: motor=%s speed=%s' % (motor.address, speed))
                 motor.on(speed)
             else:
                 motor.stop()
