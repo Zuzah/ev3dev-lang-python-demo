@@ -7,6 +7,9 @@ Implementation of R3PTAR
 import logging
 import signal
 import sys
+import subprocess
+import os
+import time
 from ev3dev2.motor import OUTPUT_A, OUTPUT_B, OUTPUT_C, OUTPUT_D, MediumMotor, LargeMotor
 from ev3dev2.sensor.lego import InfraredSensor
 from ev3dev2.display import Display
@@ -34,7 +37,17 @@ class MonitorRemoteControl(Thread):
     def run(self):
         STRIKE_SPEED_PCT = 40
         STRIKE_DISTANCE = 30
-        tick = 0
+        STRIKE_FORWARD_SEC = 0.15
+        STRIKE_BACK_SEC = 0.15
+        STRIKE_COOLDOWN = 0.7
+        RATTLE_INTERVAL = 8.0
+        SOUND_COOLDOWN = 0.8
+        HISS_SOUND = '/home/robot/R3PTAR/snake-hiss.wav'
+        RATTLE_SOUND = '/home/robot/R3PTAR/rattle-snake.wav'
+        last_sound_time = 0.0
+        last_rattle_time = 0.0
+        next_strike_time = 0.0
+        last_log_time = 0.0
 
         while True:
 
@@ -42,19 +55,38 @@ class MonitorRemoteControl(Thread):
                 log.info('%s: shutdown_event is set' % self)
                 break
 
-            #log.info("proximity: %s" % self.parent.remote.proximity)
-            if self.parent.remote.proximity < STRIKE_DISTANCE:
-                log.info('%s: proximity < %s, striking' % (self, STRIKE_DISTANCE))
+            now = time.monotonic()
+            proximity = self.parent.remote.proximity
+
+            if now - last_log_time >= 1.0:
+                log.info('%s: proximity=%s', self, proximity)
+                last_log_time = now
+
+            if proximity < STRIKE_DISTANCE and now >= next_strike_time:
+                log.info('%s: proximity < %s, striking', self, STRIKE_DISTANCE)
                 self.parent.screen.text_grid('Striking!', clear_screen=True)
                 self.parent.screen.update()
-                self.parent.speaker.play_file('/home/robot/R3PTAR/snake-hiss.wav', Sound.PLAY_NO_WAIT_FOR_COMPLETE)
-                self.parent.strike_motor.on_for_seconds(speed=STRIKE_SPEED_PCT, seconds=0.2)
-                self.parent.strike_motor.on_for_seconds(speed=(STRIKE_SPEED_PCT * -1), seconds=0.2)
+                if now - last_sound_time >= SOUND_COOLDOWN and os.path.exists(HISS_SOUND):
+                    log.info('%s: playing hiss sound', self)
+                    subprocess.Popen(['aplay', '-q', HISS_SOUND])
+                    last_sound_time = now
+                elif not os.path.exists(HISS_SOUND):
+                    log.warning('%s: sound file missing: %s', self, HISS_SOUND)
 
-            self.parent.remote.process()
-            tick += 1
-            if tick % 200 == 0:
-                log.info('%s: proximity=%s' % (self, self.parent.remote.proximity))
+                self.parent.strike_motor.on_for_seconds(speed=STRIKE_SPEED_PCT, seconds=STRIKE_FORWARD_SEC)
+                self.parent.strike_motor.on_for_seconds(speed=(STRIKE_SPEED_PCT * -1), seconds=STRIKE_BACK_SEC)
+                next_strike_time = time.monotonic() + STRIKE_COOLDOWN
+                last_rattle_time = time.monotonic()
+            elif now - last_rattle_time >= RATTLE_INTERVAL:
+                if now - last_sound_time >= SOUND_COOLDOWN and os.path.exists(RATTLE_SOUND):
+                    log.info('%s: playing rattle sound', self)
+                    subprocess.Popen(['aplay', '-q', RATTLE_SOUND])
+                    last_sound_time = now
+                    last_rattle_time = now
+                elif not os.path.exists(RATTLE_SOUND):
+                    log.warning('%s: sound file missing: %s', self, RATTLE_SOUND)
+                    last_rattle_time = now
+
             sleep(0.005)
 
 
@@ -70,6 +102,7 @@ class R3PTAR(object):
         self.strike_motor = LargeMotor(strike_motor_port)
         self.steer_motor = MediumMotor(steer_motor_port)
         self.speaker = Sound()
+        self.speaker.set_volume(100)
         self.screen = Display()
         STEER_SPEED_PCT = 30
 
