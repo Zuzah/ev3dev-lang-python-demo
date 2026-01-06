@@ -47,14 +47,22 @@ class MonitorRemoteControl(Thread):
         FEED_STRIKE_HOLD_SEC = 1.0
         FEED_STRIKE_BACK_SEC = 0.35
         FEED_STRIKE_COOLDOWN = 1.2
+        MOVE_SPEED_PCT = 15
+        STEER_SPEED_PCT = 20
+        STEER_PERIOD_SEC = 2.5
+        STRIKE_RESUME_DELAY = 0.5
         RATTLE_INTERVAL = 8.0
         SOUND_COOLDOWN = 0.8
         HISS_SOUND = '/home/robot/R3PTAR/snake-hiss.wav'
         RATTLE_SOUND = '/home/robot/R3PTAR/rattle-snake.wav'
+        MOVE_SPEED_PCT = 15
+        STEER_SPEED_PCT = 20
+        STEER_PERIOD_SEC = 2.5
         last_sound_time = 0.0
         last_rattle_time = 0.0
         next_strike_time = 0.0
         last_log_time = 0.0
+        resume_move_time = 0.0
 
         while True:
 
@@ -65,6 +73,11 @@ class MonitorRemoteControl(Thread):
             now = time.monotonic()
             proximity = self.parent.remote.proximity
             self.parent.buttons.process()
+            try:
+                if not self.parent.auto_move:
+                    self.parent.remote.process()
+            except OSError as exc:
+                log.warning('%s: IR remote processing failed: %s', self, exc)
 
             if self.parent.feed_mode:
                 strike_speed_pct = FEED_STRIKE_SPEED_PCT
@@ -82,10 +95,20 @@ class MonitorRemoteControl(Thread):
                 strike_cooldown = FAST_STRIKE_COOLDOWN
 
             if now - last_log_time >= 1.0:
-                log.info('%s: proximity=%s mode=%s', self, proximity, self.parent.mode_label())
+                log.info('%s: proximity=%s mode=%s auto=%s', self, proximity, self.parent.mode_label(), self.parent.auto_label())
                 last_log_time = now
 
+            if self.parent.auto_move and now >= resume_move_time:
+                self.parent.handle_auto_move(now,
+                                             MOVE_SPEED_PCT,
+                                             STEER_SPEED_PCT,
+                                             STEER_PERIOD_SEC)
+            elif not self.parent.auto_move:
+                self.parent.stop_movement()
+
             if proximity < STRIKE_DISTANCE and now >= next_strike_time:
+                if self.parent.auto_move:
+                    self.parent.stop_movement(brake=True)
                 log.info('%s: proximity < %s, striking', self, STRIKE_DISTANCE)
                 self.parent.screen.text_grid('Striking!', clear_screen=True)
                 self.parent.screen.update()
@@ -104,6 +127,7 @@ class MonitorRemoteControl(Thread):
                     sleep(strike_hold_sec)
                 self.parent.strike_motor.on_for_seconds(speed=(strike_speed_pct * -1), seconds=strike_back_sec)
                 next_strike_time = time.monotonic() + strike_cooldown
+                resume_move_time = time.monotonic() + STRIKE_RESUME_DELAY
                 last_rattle_time = time.monotonic()
                 self.parent.show_mode()
             elif now - last_rattle_time >= RATTLE_INTERVAL:
@@ -133,18 +157,24 @@ class R3PTAR(object):
         self.speaker = Sound()
         self.speaker.set_volume(100)
         self.screen = Display()
-        STEER_SPEED_PCT = 30
         self.buttons = Button()
+        self.steer_speed_pct = 30
         self.buttons.on_up = self.toggle_mode
+        self.buttons.on_left = self.toggle_auto_move
+        self.buttons.on_right = self.disable_auto_move
         self.feed_mode = False
+        self.auto_move = False
+        self.steer_dir = 1
+        self.next_steer_flip = 0.0
 
         self.remote = InfraredSensor()
         log.info('IR sensor address=%s' % self.remote.address)
+        log.info('Drive/steer uses IR remote; proximity mode may block remote input.')
         self.show_mode()
         self.remote.on_channel1_top_left = self.make_move(self.drive_motor, drive_speed_pct)
         self.remote.on_channel1_bottom_left = self.make_move(self.drive_motor, drive_speed_pct * -1)
-        self.remote.on_channel1_top_right = self.make_move(self.steer_motor, STEER_SPEED_PCT)
-        self.remote.on_channel1_bottom_right = self.make_move(self.steer_motor, STEER_SPEED_PCT * -1)
+        self.remote.on_channel1_top_right = self.make_move(self.steer_motor, self.steer_speed_pct)
+        self.remote.on_channel1_bottom_right = self.make_move(self.steer_motor, self.steer_speed_pct * -1)
 
         self.shutdown_event = Event()
         self.mrc = MonitorRemoteControl(self)
@@ -163,11 +193,28 @@ class R3PTAR(object):
                 motor.stop()
         return move
 
+    def handle_auto_move(self, now, move_speed_pct, steer_speed_pct, steer_period_sec):
+        if now >= self.next_steer_flip:
+            self.steer_dir *= -1
+            self.next_steer_flip = now + steer_period_sec
+            log.info('auto steer=%s', self.steer_dir)
+        self.drive_motor.on(move_speed_pct)
+        self.steer_motor.on(steer_speed_pct * self.steer_dir)
+
+    def stop_movement(self, brake=False):
+        self.drive_motor.off(brake=brake)
+        self.steer_motor.off(brake=brake)
+
     def mode_label(self):
         return 'FEED' if self.feed_mode else 'FAST'
 
+    def auto_label(self):
+        return 'AUTO-SNAKE' if self.auto_move else 'REMOTE'
+
     def show_mode(self):
-        self.screen.text_grid('Mode: %s\nUP: change mode' % self.mode_label(), clear_screen=True)
+        self.screen.text_grid('Mode: %s\nMove: %s\nUP: mode L: auto R: stop' %
+                              (self.mode_label(), self.auto_label()),
+                              clear_screen=True)
         self.screen.update()
 
     def toggle_mode(self, state=None):
@@ -177,6 +224,20 @@ class R3PTAR(object):
         log.info('Mode changed: %s', self.mode_label())
         self.show_mode()
 
+    def toggle_auto_move(self, state=None):
+        if state is False:
+            return
+        self.auto_move = not self.auto_move
+        log.info('Auto move (snake): %s', self.auto_label())
+        self.show_mode()
+
+    def disable_auto_move(self, state=None):
+        if state is False:
+            return
+        if self.auto_move:
+            self.auto_move = False
+            log.info('Auto move: %s', self.auto_label())
+            self.show_mode()
     def shutdown_robot(self):
 
         if self.shutdown_event.is_set():
