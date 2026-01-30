@@ -31,6 +31,13 @@ run the program via `./PROGRAM_NAME.py`. Example:
 $ cd ~/ev3dev-lang-python-demo/robots/R3PTAR/
 $ ./r3ptar.py
 ```
+
+Alternatively, if you are working from another computer, copy the code to the
+EV3 and run it over SSH. Example:
+```
+$ scp -r /path/to/ev3dev-lang-python-demo/robots/R3PTAR robot@ev3dev.local:/home/robot/
+$ ssh robot@ev3dev.local "cd /home/robot/R3PTAR && python3 r3ptar.py"
+```
 ## Brickman
 To run one of the demo programs from Brickman, select the program in the
 File Browser.
